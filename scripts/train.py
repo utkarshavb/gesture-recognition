@@ -115,7 +115,7 @@ def run_loop(train: bool=True):
         model.eval()
         desc = "Validating"
         ctx = torch.inference_mode
-    tot_loss = 0
+    tot_loss, tot_samples = 0, 0
     all_preds, all_targs = [], []
 
     with ctx():
@@ -134,7 +134,9 @@ def run_loop(train: bool=True):
             all_preds.append(preds.detach().cpu())
 
             loss = loss_fn(logits, gestures)
-            tot_loss += loss.detach().item()
+            samples = gestures.size(0)
+            tot_loss += samples*loss.detach().item()
+            tot_samples += samples
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -143,7 +145,8 @@ def run_loop(train: bool=True):
     all_preds = torch.cat(all_preds, dim=0)
     all_targs = torch.cat(all_targs, dim=0)
     f1 = hierarchical_f1(all_preds, all_targs)
-    return tot_loss/len(dl), f1
+    tot_loss /= max(1, tot_samples)
+    return tot_loss, f1
 
 start = time.time()
 
