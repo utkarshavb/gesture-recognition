@@ -105,15 +105,14 @@ class GestureDataset(Dataset):
             rel_rot[:, 1:] *= -1   # flips y & z components
         return acc, lin_acc, rel_rot
     
-    def collate(self, batch: list[tuple[Tensor, ...]], device=None, mixup_alpha: float=-1):
+    def collate(self, batch: list[tuple[Tensor, ...]], device=None, mixup: MixUp|None=None):
         """Collates and moves the batch to device; also does mixup if `mixup_alpha>0`"""
         *xs, y = zip(*batch)
         xs = [
             torch.stack(x).to(device, non_blocking=True) for x in xs
         ]
         y = torch.stack(y).to(device, non_blocking=True)
-        if mixup_alpha > 0:
-            mixup = MixUp(N_CLASSES, mixup_alpha)
+        if mixup:
             *xs, y = mixup(*xs, y=y)
         return *xs, y
 

@@ -18,19 +18,19 @@ parser.add_argument("--run", type=str, default=None, help="Name of the wandb run
 parser.add_argument("--wandb-group", type=str, default="test")
 parser.add_argument("--sensor-dir", type=str, default="data/processed")
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--lr-range-test", action="store_true", help="Runs LR range test by setting `warmup_frac=1` and `warmup_strat='exp'`")
 # model
 parser.add_argument("--num-layers", type=int, default=2)
 parser.add_argument("--seq-len", type=int, default=96)
 parser.add_argument("--d-model", type=int, default=64)
 # training horizon
-parser.add_argument("--num-steps", type=int, default=-1)
+parser.add_argument("--epochs", type=int, default=40)
 parser.add_argument("--bs", type=int, default=128)
 # optimization
 parser.add_argument("--lr-max", type=float, default=3e-2)
 parser.add_argument("--init-lr-frac", type=float, default=1e-2)
 parser.add_argument("--final-lr-frac", type=float, default=1e-3)
-parser.add_argument("--warmup-frac", type=float, default=1e-2)
-parser.add_argument("--warmup-strat", type=str, default="linear")
+parser.add_argument("--warmup-frac", type=float, default=1e-1)
 parser.add_argument("--momentum", type=float, default=0.95)
 # regularization
 parser.add_argument("--wd", type=float, default=1e-1)
@@ -57,8 +57,9 @@ if device=="cuda":
 # dataset init
 seq_len = args.seq_len
 dset = GestureDataset(args.sensor_dir, max_seq_len=seq_len)
-train_collate = partial(dset.collate, device=device, mixup_alpha=args.mixup_alpha)
-valid_collate = partial(dset.collate, device=device, mixup_alpha=-1)
+mixup = MixUp(N_CLASSES, args.mixup_alpha)
+train_collate = partial(dset.collate, device=device, mixup=mixup)
+valid_collate = partial(dset.collate, device=device, mixup=None)
 train_idxs, valid_idxs = dset.get_split(seed=seed)
 
 #dataloader init
@@ -74,7 +75,8 @@ valid_dl = DataLoader(
 )
 
 # training horizon
-num_steps = args.num_steps
+epochs = args.epochs
+num_steps = len(train_dl)*epochs
 
 # model init
 num_layers = args.num_layers
@@ -83,9 +85,13 @@ model = Model(num_layers, d_model, N_CLASSES, p=args.p).to(device)
 
 # optimization
 lr_max = args.lr_max
-warmup_iters = args.warmup_frac * num_steps
+warmup_strat = "linear"
 betas = (args.momentum, 0.99)
 optimizer = AdamW(model.parameters(), weight_decay=args.wd, betas=betas)
+
+if args.lr_range_test:
+    args.warmup_frac = 1.0
+    warmup_strat = "exp"
 
 # logging init
 config = vars(args).copy()
@@ -94,7 +100,7 @@ for k in ["run","wandb_group","sensor_dir"]:
 run = wandb.init(
     project="gesture_recognition", name=args.run, group=args.wandb_group, config=config
 )
-ckpt_path = Path(f"models/{args.run}")
+ckpt_path = Path(f"models/{run.name}")
 
 # ----------------------------------------------------------------------------------------------------
 @torch.inference_mode()
@@ -104,12 +110,12 @@ def valid_loop():
     for *xs, y in tqdm(valid_dl, desc="Validating"):
         logits = model(*xs)
         preds = torch.argmax(logits, dim=-1)
-        all_preds.append(preds.detach().cpu())
-        all_targs.append(y.detach().cpu())
+        all_preds.append(preds.cpu())
+        all_targs.append(y.cpu())
 
         loss = compute_loss(logits, y)
         samples = y.size(0)
-        tot_loss += samples*loss.detach().item()
+        tot_loss += samples*loss.item()
         tot_samples += samples
     all_preds = torch.cat(all_preds, dim=0)
     all_targs = torch.cat(all_targs, dim=0)
@@ -125,8 +131,11 @@ for step in range(num_steps):
         *xs, y = next(train_dl_iter)
     except StopIteration:
         # TODO: compute and log metric on training set
-        valid_loss, valid_f1 = valid_loop()
-        log = {"valid/loss":valid_loss, "valid/f1":valid_f1}
+        log = {}
+        if not args.lr_range_test:
+            valid_loss, valid_f1 = valid_loop()
+            log["valid/f1"] = valid_f1
+            log["valid/loss"] = valid_loss
         wandb.log(log, step=step-1)
         print(" | ".join(f"{k}={v:.4f}" for k,v in log.items()))
 
@@ -134,8 +143,8 @@ for step in range(num_steps):
         *xs, y = next(train_dl_iter)
 
     lr = schedule_lr(
-        step, lr_max, num_steps, init_lr_frac=args.init_lr_frac, warmup_frac=args.warmup_frac,
-        final_lr_frac=args.final_lr_frac, warmup_strat=args.warmup_strat
+        step=step, lr_max=lr_max, tot_steps=num_steps, init_lr_frac=args.init_lr_frac,
+        warmup_frac=args.warmup_frac, final_lr_frac=args.final_lr_frac, warmup_strat=warmup_strat
     )
     for g in optimizer.param_groups:
         g["lr"] = lr
