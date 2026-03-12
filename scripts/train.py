@@ -2,45 +2,43 @@ from pathlib import Path
 import argparse, time, os
 from tqdm import tqdm
 from contextlib import nullcontext
+from functools import partial
 
 import numpy as np, torch
 from torch.utils.data import Subset, DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR
 import wandb
 
 from gesture_recognition.dataset import N_CLASSES, GestureDataset
 from gesture_recognition.model import Model
-from gesture_recognition.training_utils import loss_fn, hierarchical_f1, MixUp, save_checkpoint
+from gesture_recognition.training_utils import compute_loss, schedule_lr, hierarchical_f1, MixUp, save_checkpoint
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--run", type=str, default=None, help="Name of the wandb run")
 parser.add_argument("--wandb-group", type=str, default="test")
 parser.add_argument("--sensor-dir", type=str, default="data/processed")
+parser.add_argument("--seed", type=int, default=42)
+# model
 parser.add_argument("--num-layers", type=int, default=2)
 parser.add_argument("--seq-len", type=int, default=96)
 parser.add_argument("--d-model", type=int, default=64)
-parser.add_argument("--epochs", type=int, default=50)
+# training horizon
+parser.add_argument("--num-steps", type=int, default=-1)
 parser.add_argument("--bs", type=int, default=128)
+# optimization
 parser.add_argument("--lr-max", type=float, default=3e-2)
-parser.add_argument("--wd", type=float, default=1e-1)
+parser.add_argument("--init-lr-frac", type=float, default=1e-2)
+parser.add_argument("--final-lr-frac", type=float, default=1e-3)
+parser.add_argument("--warmup-frac", type=float, default=1e-2)
+parser.add_argument("--warmup-strat", type=str, default="linear")
 parser.add_argument("--momentum", type=float, default=0.95)
+# regularization
+parser.add_argument("--wd", type=float, default=1e-1)
 parser.add_argument("--p", type=float, default=0.0)
 parser.add_argument("--mixup-alpha", type=float, default=0.0)
-parser.add_argument("--seed", type=int, default=42)
 args = parser.parse_args()
 
 # ----------------------------------------------------------------------------------------------------
-print("\nConfiguration:")
-
-# seed everything
-seed = args.seed
-np.random.seed(seed)
-torch.manual_seed(seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(seed)
-print(f"{seed=}")
-
 # device init
 if torch.cuda.is_available():
     device = "cuda"
@@ -48,100 +46,71 @@ elif torch.backends.mps.is_available():
     device = "mps"
 else:
     device = "cpu"
-print(f"Using {device=}")
+
+# seed everything
+seed = args.seed
+np.random.seed(seed)
+torch.manual_seed(seed)
+if device=="cuda":
+    torch.cuda.manual_seed_all(seed)
 
 # dataset init
 seq_len = args.seq_len
-print(f"{seq_len=}")
 dset = GestureDataset(args.sensor_dir, max_seq_len=seq_len)
+train_collate = partial(dset.collate, device=device, mixup_alpha=args.mixup_alpha)
+valid_collate = partial(dset.collate, device=device, mixup_alpha=-1)
 train_idxs, valid_idxs = dset.get_split(seed=seed)
 
 #dataloader init
 num_workers = os.cpu_count() or 4
 bs = args.bs
-print(f"{bs=}, {num_workers=}")
 train_dl = DataLoader(
-    Subset(dset, train_idxs), batch_size=bs, shuffle=True,
-    pin_memory=(device=="cuda"), num_workers=num_workers
+    Subset(dset, train_idxs), batch_size=bs, collate_fn=train_collate,
+    shuffle=True, pin_memory=(device=="cuda"), num_workers=num_workers
 )
 valid_dl = DataLoader(
-    Subset(dset, valid_idxs), batch_size=bs, shuffle=False,
-    pin_memory=(device=="cuda"), num_workers=num_workers
+    Subset(dset, valid_idxs), batch_size=bs, collate_fn=valid_collate,
+    shuffle=False, pin_memory=(device=="cuda"), num_workers=num_workers
 )
+
+# training horizon
+num_steps = args.num_steps
 
 # model init
 num_layers = args.num_layers
 d_model = args.d_model
-print(f"{num_layers=}, {d_model=}, p={args.p:.4f}")
 model = Model(num_layers, d_model, N_CLASSES, p=args.p).to(device)
 
 # optimization
-epochs = args.epochs
-print(f"{epochs=}")
-lr_max, wd, momentum = args.lr_max, args.wd, args.momentum
-print(f"{lr_max=:.2f}, {wd=:.3f}, {momentum=:.2f}")
-optimizer = AdamW(model.parameters(), lr=lr_max, weight_decay=wd)
-scheduler = OneCycleLR(
-    optimizer, lr_max, epochs=epochs, steps_per_epoch=len(train_dl),
-    anneal_strategy="cos", div_factor=100, max_momentum=momentum
-)
+lr_max = args.lr_max
+warmup_iters = args.warmup_frac * num_steps
+betas = (args.momentum, 0.99)
+optimizer = AdamW(model.parameters(), weight_decay=args.wd, betas=betas)
 
-# extra
-mixup = MixUp(N_CLASSES, args.mixup_alpha)
-ckpt_dir = Path(f"models/{args.run}")
-ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-# wandb init
-config = {
-    "num_layers":num_layers, "d_model":d_model, "seq_len":seq_len,
-    "epochs":epochs, "bs":bs, "wd":wd, "lr_max":lr_max, "p":args.p,
-    "momentum":momentum, "mixup_alpha":args.mixup_alpha
-}
+# logging init
+config = vars(args).copy()
+for k in ["run","wandb_group","sensor_dir"]:
+    config.pop(k)
 run = wandb.init(
     project="gesture_recognition", name=args.run, group=args.wandb_group, config=config
 )
+ckpt_path = Path(f"models/{args.run}")
 
 # ----------------------------------------------------------------------------------------------------
-print("\nTraining loop:")
-
-def run_loop(train: bool=True):
-    if train:
-        dl = train_dl
-        model.train()
-        desc = "Training"
-        ctx = nullcontext
-    else:
-        dl = valid_dl
-        model.eval()
-        desc = "Validating"
-        ctx = torch.inference_mode
+@torch.inference_mode()
+def valid_loop():
     tot_loss, tot_samples = 0, 0
     all_preds, all_targs = [], []
+    for *xs, y in tqdm(valid_dl, desc="Validating"):
+        logits = model(*xs)
+        preds = torch.argmax(logits, dim=-1)
+        all_preds.append(preds.detach().cpu())
+        all_targs.append(y.detach().cpu())
 
-    with ctx():
-        for accs, lin_accs, rel_rots, gestures in tqdm(dl, desc=desc, leave=False):
-            all_targs.append(gestures.detach().cpu())   # store hard targets for metric computation
-
-            accs = accs.to(device, non_blocking=True)
-            lin_accs = lin_accs.to(device, non_blocking=True)
-            rel_rots = rel_rots.to(device, non_blocking=True)
-            gestures = gestures.to(device, non_blocking=True)
-            if train:
-                accs, lin_accs, rel_rots, gestures = mixup(accs, lin_accs, rel_rots, y=gestures)
-
-            logits = model(accs, lin_accs, rel_rots)
-            preds = torch.argmax(logits, dim=-1)
-            all_preds.append(preds.detach().cpu())
-
-            loss = loss_fn(logits, gestures)
-            samples = gestures.size(0)
-            tot_loss += samples*loss.detach().item()
-            tot_samples += samples
-            if train:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step(); scheduler.step()
-
+        loss = compute_loss(logits, y)
+        samples = y.size(0)
+        tot_loss += samples*loss.detach().item()
+        tot_samples += samples
     all_preds = torch.cat(all_preds, dim=0)
     all_targs = torch.cat(all_targs, dim=0)
     f1 = hierarchical_f1(all_preds, all_targs)
@@ -149,24 +118,43 @@ def run_loop(train: bool=True):
     return tot_loss, f1
 
 start = time.time()
+train_dl_iter = iter(train_dl)
 
-for epoch in range(1, epochs+1):
-    t0 = time.time()
-    lr = optimizer.param_groups[0]["lr"]
-    train_loss, train_f1 = run_loop(train=True)
-    train_dt = time.time()-t0
-    valid_loss, valid_f1 = run_loop(train=False)
-    valid_dt = time.time()-t0-train_dt
+for step in range(num_steps):
+    try:
+        *xs, y = next(train_dl_iter)
+    except StopIteration:
+        # TODO: compute and log metric on training set
+        valid_loss, valid_f1 = valid_loop()
+        log = {"valid/loss":valid_loss, "valid/f1":valid_f1}
+        wandb.log(log, step=step-1)
+        print(" | ".join(f"{k}={v:.4f}" for k,v in log.items()))
+
+        train_dl_iter = iter(train_dl)
+        *xs, y = next(train_dl_iter)
+
+    lr = schedule_lr(
+        step, lr_max, num_steps, init_lr_frac=args.init_lr_frac, warmup_frac=args.warmup_frac,
+        final_lr_frac=args.final_lr_frac, warmup_strat=args.warmup_strat
+    )
+    for g in optimizer.param_groups:
+        g["lr"] = lr
     
-    log = {
-        "train/loss":train_loss, "valid/loss":valid_loss, "train/f1":train_f1,
-        "valid/f1":valid_f1, "train/dt": train_dt, "valid/dt": valid_dt,
-    }
-    log_str = " | ".join([f"{k}={v:.4f}" for k,v in log.items()])
-    print(f"{epoch=}/{epochs} | " + log_str)
-    wandb.log(log)
+    logits = model(*xs)
+    loss = compute_loss(logits, y)
+    if not torch.isfinite(loss).item():
+        break
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
 
-save_checkpoint(model, optimizer, epochs, ckpt_dir/f"step: {epochs}")
+    # log
+    log = {"train/loss":loss.detach().item(), "lr": lr}
+    log_str = " | ".join(f"{k}={v:.4f}" for k,v in log.items())
+    print(f"{step=}/{num_steps} | " + log_str)
+    wandb.log(log, step=step)
+
+save_checkpoint(model, optimizer, num_steps, ckpt_path)
 tot_time = time.time()-start
 print(f"\nRun complete! Total time taken: {tot_time/60:,} minutes")
 run.finish()
