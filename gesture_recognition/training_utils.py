@@ -1,5 +1,5 @@
 from pathlib import Path
-import numpy as np
+import math
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import f1_score
@@ -47,12 +47,43 @@ class MixUp:
 
         return *xs_mix, y_mix
 
-def loss_fn(logits: Float[Tensor, "bs n_classes"], targs: Tensor) -> Tensor:
+def compute_loss(logits: Float[Tensor, "bs n_classes"], targs: Tensor) -> Tensor:
     """Implements soft-target cross entropy. `targs` can be class idxs or probs"""
     if len(targs.shape) == 1:
         targs = F.one_hot(targs, logits.size(1))
     logp = F.log_softmax(logits, dim=-1)
     return -(targs * logp).sum(dim=-1).mean()
+
+def schedule_lr(
+    step: int, lr_max: float, tot_steps: int, init_lr_frac: float=1e-4,
+    warmup_frac: float=0.1, final_lr_frac: float=1e-4, warmup_strat: str="linear"
+) -> float:
+    """
+    Implements 1cycle LR schedule; also allows for `warmup_strat="exp"`
+    with `warmup_frac=1` to be able to perform the LR range test
+    """
+    init_lr = lr_max*init_lr_frac
+    final_lr = lr_max*final_lr_frac
+    last_step = tot_steps-1   # step: [0, tot_steps)
+    warmup_steps = int(last_step*warmup_frac)
+    
+    # Phase 1: Warmup (or LR Range Test if warmup_frac=1.0)
+    if step <= warmup_steps:
+        if warmup_steps == 0:
+            return lr_max
+        p = step/warmup_steps
+        if warmup_strat == "linear":
+            return init_lr + (lr_max-init_lr)*p
+        elif warmup_strat == "exp":
+            return init_lr * (lr_max/init_lr)**p
+        else:
+            raise ValueError(f"Unknown warmup strategy: '{warmup_strat}'. Use 'linear' or 'exp'")
+            
+    # Phase 2: Cooldown (Cosine Annealing)
+    else:
+        cooldown_steps = last_step-warmup_steps
+        p = (step-warmup_steps)/cooldown_steps
+        return final_lr + 0.5*(lr_max-final_lr)*(1+math.cos(math.pi*p))
 
 def save_checkpoint(
     model: torch.nn.Module, optimizer: torch.optim.Optimizer, it: int, out: str|Path
