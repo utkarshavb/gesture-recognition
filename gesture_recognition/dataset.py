@@ -6,6 +6,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from einops import rearrange
 import numpy.typing as npt
 from torch import Tensor
+from gesture_recognition.training_utils import MixUp
 
 ACC_COLS = ['acc_x','acc_y','acc_z']
 ROT_COLS = ['rot_w','rot_x','rot_y','rot_z']
@@ -103,6 +104,18 @@ class GestureDataset(Dataset):
             lin_acc[:, 0] *= -1
             rel_rot[:, 1:] *= -1   # flips y & z components
         return acc, lin_acc, rel_rot
+    
+    def collate(self, batch: list[tuple[Tensor, ...]], device=None, mixup_alpha: float=-1):
+        """Collates and moves the batch to device; also does mixup if `mixup_alpha>0`"""
+        *xs, y = zip(*batch)
+        xs = [
+            torch.stack(x).to(device, non_blocking=True) for x in xs
+        ]
+        y = torch.stack(y).to(device, non_blocking=True)
+        if mixup_alpha > 0:
+            mixup = MixUp(N_CLASSES, mixup_alpha)
+            *xs, y = mixup(*xs, y=y)
+        return *xs, y
 
     def get_split(self, num_folds: int=5, seed: int=42):
         """Returns a train/valid split"""

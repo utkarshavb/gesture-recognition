@@ -1,5 +1,6 @@
 from pathlib import Path
-import torch, torch.nn as nn
+import numpy as np
+import torch
 import torch.nn.functional as F
 from sklearn.metrics import f1_score
 from torch import Tensor
@@ -21,8 +22,9 @@ def hierarchical_f1(preds: Int[Tensor, "bs"], targs: Int[Tensor, "bs"]):
 
 class MixUp:
     def __init__(self, n_classes: int, alpha: float=0.4):
+        assert alpha > 0
         self.C = n_classes
-        self.distrib = torch.distributions.Beta(alpha, alpha) if alpha>0 else None
+        self.distrib = torch.distributions.Beta(alpha, alpha)
 
     def _interp_rot(self, rots1: Tensor, rots2: Tensor, lam: Tensor):
         """Implements shortest-distance nlerp for quaternion sequences"""
@@ -35,9 +37,8 @@ class MixUp:
     def __call__(self, *xs: Float[Tensor, "bs 3 L"], y: Int[Tensor, "bs"]):
         bs = xs[0].size(0)
         device = xs[0].device
-        if self.distrib is None:
-            return *xs, y
         lam = self.distrib.sample((bs,)).to(device)
+        lam = torch.where(lam>0.5, lam, 1-lam)
         perm = torch.randperm(bs, device=device)
 
         xs_mix = [torch.lerp(x, x[perm], weight=lam[:, None, None]) for x in xs]
