@@ -30,7 +30,7 @@ parser.add_argument("--bs", type=int, default=128)
 parser.add_argument("--lr-max", type=float, default=3e-2)
 parser.add_argument("--init-lr-frac", type=float, default=1e-2)
 parser.add_argument("--final-lr-frac", type=float, default=1e-3)
-parser.add_argument("--warmup-frac", type=float, default=1e-1)
+parser.add_argument("--warmup-frac", type=float, default=0.1)
 parser.add_argument("--momentum", type=float, default=0.95)
 # regularization
 parser.add_argument("--wd", type=float, default=1e-1)
@@ -57,7 +57,7 @@ if device=="cuda":
 # dataset init
 seq_len = args.seq_len
 dset = GestureDataset(args.sensor_dir, max_seq_len=seq_len)
-mixup = MixUp(N_CLASSES, args.mixup_alpha)
+mixup = MixUp(N_CLASSES, args.mixup_alpha) if args.mixup_alpha>0 else None
 train_collate = partial(dset.collate, device=device, mixup=mixup)
 valid_collate = partial(dset.collate, device=device, mixup=None)
 train_idxs, valid_idxs = dset.get_split(seed=seed)
@@ -74,10 +74,6 @@ valid_dl = DataLoader(
     shuffle=False, pin_memory=(device=="cuda"), num_workers=num_workers
 )
 
-# training horizon
-epochs = args.epochs
-num_steps = len(train_dl)*epochs
-
 # model init
 num_layers = args.num_layers
 d_model = args.d_model
@@ -92,6 +88,12 @@ optimizer = AdamW(model.parameters(), weight_decay=args.wd, betas=betas)
 if args.lr_range_test:
     args.warmup_frac = 1.0
     warmup_strat = "exp"
+    args.epochs = 5
+
+# training horizon
+epochs = args.epochs
+steps_per_epoch = len(train_dl)
+num_steps = steps_per_epoch*epochs
 
 # logging init
 config = vars(args).copy()
@@ -127,21 +129,7 @@ start = time.time()
 train_dl_iter = iter(train_dl)
 
 for step in range(num_steps):
-    try:
-        *xs, y = next(train_dl_iter)
-    except StopIteration:
-        # TODO: compute and log metric on training set
-        log = {}
-        if not args.lr_range_test:
-            valid_loss, valid_f1 = valid_loop()
-            log["valid/f1"] = valid_f1
-            log["valid/loss"] = valid_loss
-        wandb.log(log, step=step-1)
-        print(" | ".join(f"{k}={v:.4f}" for k,v in log.items()))
-
-        train_dl_iter = iter(train_dl)
-        *xs, y = next(train_dl_iter)
-
+    *xs, y = next(train_dl_iter)
     lr = schedule_lr(
         step=step, lr_max=lr_max, tot_steps=num_steps, init_lr_frac=args.init_lr_frac,
         warmup_frac=args.warmup_frac, final_lr_frac=args.final_lr_frac, warmup_strat=warmup_strat
@@ -161,6 +149,16 @@ for step in range(num_steps):
     log = {"train/loss":loss.detach().item(), "lr": lr}
     log_str = " | ".join(f"{k}={v:.4f}" for k,v in log.items())
     print(f"{step=}/{num_steps} | " + log_str)
+
+    if (step+1) % steps_per_epoch == 0:   # end of epoch
+        # TODO: compute and log metric on training set
+        valid_loss, valid_f1 = valid_loop()
+        log["valid/f1"] = valid_f1
+        log["valid/loss"] = valid_loss
+        print(f"valid/loss={valid_loss:.4f} | valid/f1={valid_f1:.4f}")
+
+        train_dl_iter = iter(train_dl)
+        
     wandb.log(log, step=step)
 
 save_checkpoint(model, optimizer, num_steps, ckpt_path)
