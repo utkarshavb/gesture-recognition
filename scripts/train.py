@@ -14,11 +14,13 @@ from gesture_recognition.model import Model
 from gesture_recognition.training_utils import compute_loss, schedule_lr, hierarchical_f1, MixUp, save_checkpoint
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--sensor-dir", type=str, default="data/processed")
+# run state
 parser.add_argument("--run", type=str, default=None, help="Name of the wandb run")
 parser.add_argument("--wandb-group", type=str, default="test")
-parser.add_argument("--sensor-dir", type=str, default="data/processed")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--lr-range-test", action="store_true", help="Runs LR range test by setting `warmup_frac=1` and `warmup_strat='exp'`")
+parser.add_argument("--save-ckpt", action="store_true")
 # model
 parser.add_argument("--num-layers", type=int, default=2)
 parser.add_argument("--seq-len", type=int, default=96)
@@ -102,7 +104,6 @@ for k in ["run","wandb_group","sensor_dir"]:
 run = wandb.init(
     project="gesture_recognition", name=args.run, group=args.wandb_group, config=config
 )
-ckpt_path = Path(f"models/{run.name}")
 
 # ----------------------------------------------------------------------------------------------------
 @torch.inference_mode()
@@ -161,7 +162,10 @@ for step in range(num_steps):
         
     wandb.log(log, step=step)
 
-save_checkpoint(model, optimizer, num_steps, ckpt_path)
 tot_time = time.time()-start
 print(f"\nRun complete! Total time taken: {tot_time/60:,} minutes")
+
+if args.save_ckpt:
+    ckpt_path = Path(f"models/{run.name}.tar")
+    save_checkpoint(model, optimizer, num_steps, ckpt_path)
 run.finish()
