@@ -22,27 +22,20 @@ def hierarchical_f1(preds: Int[Tensor, "bs"], targs: Int[Tensor, "bs"]):
 
 class MixUp:
     def __init__(self, n_classes: int, alpha: float=0.4):
-        assert alpha > 0
         self.C = n_classes
-        self.distrib = torch.distributions.Beta(alpha, alpha)
-
-    def _interp_rot(self, rots1: Tensor, rots2: Tensor, lam: Tensor):
-        """Implements shortest-distance nlerp for quaternion sequences"""
-        dot = (rots1*rots2).sum(dim=-1, keepdim=True)
-        rots2 = torch.where(dot<0, -rots2, rots2)
-        rots_mix = torch.lerp(rots1, rots2, weight=lam[:, None, None])
-        rots_mix = rots_mix / (rots_mix.norm(dim=-1, keepdim=True).clamp_min(1e-6))
-        return rots_mix
+        self.distrib = torch.distributions.Beta(alpha, alpha) if alpha>0 else None
 
     def __call__(self, *xs: Float[Tensor, "bs 3 L"], y: Int[Tensor, "bs"]):
-        bs = xs[0].size(0)
-        device = xs[0].device
+        if self.distrib is None:
+            return *xs, y
+        
+        bs, device = xs[0].size(0), xs[0].device
         lam = self.distrib.sample((bs,)).to(device)
         lam = torch.where(lam>0.5, lam, 1-lam)
         perm = torch.randperm(bs, device=device)
 
         xs_mix = [torch.lerp(x, x[perm], weight=lam[:, None, None]) for x in xs]
-        y = F.one_hot(y, self.C).to(lam.dtype)
+        y = torch.nn.functional.one_hot(y, self.C).to(lam.dtype)
         y_mix = torch.lerp(y, y[perm], weight=lam[:, None])
 
         return *xs_mix, y_mix

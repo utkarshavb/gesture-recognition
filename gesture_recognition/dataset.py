@@ -1,12 +1,15 @@
 from pathlib import Path
-import numpy as np, torch
+import numpy as np
+import torch
 from torch.utils.data import Dataset
-from scipy.spatial.transform import Rotation as R
+
 from sklearn.model_selection import StratifiedGroupKFold
+from scipy.spatial.transform import Rotation as R
 from einops import rearrange
+
 import numpy.typing as npt
 from torch import Tensor
-from gesture_recognition.training_utils import MixUp
+from jaxtyping import Float, Int
 
 ACC_COLS = ['acc_x','acc_y','acc_z']
 ROT_COLS = ['rot_w','rot_x','rot_y','rot_z']
@@ -62,18 +65,30 @@ def handedness_flip(acc, lin_acc, rel_rot, hand: int):
         rel_rot[:, 1:] *= -1   # flips y & z components
     return acc, lin_acc, rel_rot
 
+def pad_or_trunc(*xs: Float[npt.NDArray, "seq_len c"], L=128) -> tuple[Float[npt.NDArray, "L c"], ...]:
+    seq_len, dtype = xs[0].shape[0], xs[0].dtype
+    if seq_len > L:
+        xs = tuple(x[-seq_len] for x in xs)
+    else:
+        pad_len = L-seq_len
+        pre_pad = np.full((pad_len, 3), 0, dtype=dtype)
+        xs = tuple(np.concatenate([pre_pad.copy(), x], axis=0) for x in xs)
+    return xs
+
 class GestureDataset(Dataset):
     def __init__(self, sensor_dir: str|Path, max_seq_len: int=128):
         if isinstance(sensor_dir, str):
             sensor_dir = Path(sensor_dir)
         self.imus: npt.NDArray = np.load(sensor_dir/"imu.npy", mmap_mode="r")
-        self.L = max_seq_len
+
         indexes = np.load(sensor_dir/"index.npz")
         self.seq_starts = indexes["seq_starts"]
         self.seq_lens = indexes["seq_lens"]
         self.gestures = indexes["gestures"]
         self.subjects = indexes["subjects"]
         self.handedness = indexes["handedness"]
+        
+        self.L = max_seq_len
 
     def __len__(self) -> int:
         return self.seq_starts.shape[0]
@@ -81,40 +96,22 @@ class GestureDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, ...]:
         start = self.seq_starts[idx]
         seq_len = self.seq_lens[idx]
-        end = start+seq_len
-        if seq_len > self.L:
-            start = end-self.L
-            seq_len = self.L
-        imu = self.imus[start:end, :].copy()
-
-        pad_len = self.L-seq_len
-        pre_pad = np.full((pad_len, 7), [0,0,0,1,0,0,0], dtype=imu.dtype)
-        imu = np.concatenate([pre_pad, imu], axis=0)
+        imu = self.imus[start: start+seq_len, :].copy()
+        gesture = LBL2ID[self.gestures[idx].item()]
+        hand = self.handedness[idx].item()
 
         acc, quat = imu[:, :3], imu[:, 3:]
         quat = impute_quat(quat, dtype=imu.dtype)
         lin_acc = remove_gravity(acc, quat)
         rel_rot = get_rel_rot(quat)
-        hand = self.handedness[idx].item()
-        acc, lin_acc, rel_rot = handedness_flip(acc, lin_acc, rel_rot, hand)
+        acc, lin_acc, rel_rot = handedness_flip(acc, lin_acc, rel_rot, hand=hand)
+        acc, lin_acc, rel_rot = pad_or_trunc(acc, lin_acc, rel_rot, L=self.L)
 
-        gesture = LBL2ID[self.gestures[idx].item()]
         gesture = torch.tensor(gesture, dtype=torch.long)
         acc, lin_acc, rel_rot = [
             rearrange(torch.from_numpy(x), "L c -> c L") for x in (acc, lin_acc, rel_rot)
         ]
-        return acc, lin_acc, rel_rot, hand, gesture
-    
-    def collate(self, batch: list[tuple[Tensor, ...]], device=None, mixup: MixUp|None=None):
-        """Collates and moves the batch to device; also does mixup if `mixup_alpha>0`"""
-        *xs, y = zip(*batch)
-        xs = [
-            torch.stack(x).to(device, non_blocking=True) for x in xs
-        ]
-        y = torch.stack(y).to(device, non_blocking=True)
-        if mixup:
-            *xs, y = mixup(*xs, y=y)
-        return *xs, y
+        return acc, lin_acc, rel_rot, gesture
 
     def get_split(self, num_folds: int=5, seed: int=42):
         """Returns a train/valid split"""

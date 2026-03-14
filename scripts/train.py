@@ -59,27 +59,25 @@ if device=="cuda":
 # dataset init
 seq_len = args.seq_len
 dset = GestureDataset(args.sensor_dir, max_seq_len=seq_len)
-mixup = MixUp(N_CLASSES, args.mixup_alpha) if args.mixup_alpha>0 else None
-train_collate = partial(dset.collate, device=device, mixup=mixup)
-valid_collate = partial(dset.collate, device=device, mixup=None)
 train_idxs, valid_idxs = dset.get_split(seed=seed)
 
 #dataloader init
 num_workers = os.cpu_count() or 4
 bs = args.bs
 train_dl = DataLoader(
-    Subset(dset, train_idxs), batch_size=bs, collate_fn=train_collate,
-    shuffle=True, pin_memory=(device=="cuda"), num_workers=num_workers
+    Subset(dset, train_idxs), batch_size=bs, shuffle=True,
+    pin_memory=(device=="cuda"), num_workers=num_workers
 )
 valid_dl = DataLoader(
-    Subset(dset, valid_idxs), batch_size=bs, collate_fn=valid_collate,
-    shuffle=False, pin_memory=(device=="cuda"), num_workers=num_workers
+    Subset(dset, valid_idxs), batch_size=bs, shuffle=False,
+    pin_memory=(device=="cuda"), num_workers=num_workers
 )
 
 # model init
 num_layers = args.num_layers
 d_model = args.d_model
 model = Model(num_layers, d_model, N_CLASSES, p=args.p).to(device)
+mixup = MixUp(N_CLASSES, args.mixup_alpha)
 
 # optimization
 lr_max = args.lr_max
@@ -111,6 +109,8 @@ def valid_loop():
     tot_loss, tot_samples = 0, 0
     all_preds, all_targs = [], []
     for *xs, y in tqdm(valid_dl, desc="Validating"):
+        xs = [torch.stack(x).to(device, non_blocking=True) for x in xs]
+        y = torch.stack(y).to(device, non_blocking=True)
         logits = model(*xs)
         preds = torch.argmax(logits, dim=-1)
         all_preds.append(preds.cpu())
@@ -131,6 +131,10 @@ train_dl_iter = iter(train_dl)
 
 for step in range(num_steps):
     *xs, y = next(train_dl_iter)
+    xs = [torch.stack(x).to(device, non_blocking=True) for x in xs]
+    y = torch.stack(y).to(device, non_blocking=True)
+    *xs, y = mixup(*xs, y=y)
+    
     lr = schedule_lr(
         step=step, lr_max=lr_max, tot_steps=num_steps, init_lr_frac=args.init_lr_frac,
         warmup_frac=args.warmup_frac, final_lr_frac=args.final_lr_frac, warmup_strat=warmup_strat
