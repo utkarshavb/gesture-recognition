@@ -95,8 +95,9 @@ class GestureDataset(Dataset):
         quat = impute_quat(quat, dtype=imu.dtype)
         lin_acc = remove_gravity(acc, quat)
         rel_rot = get_rel_rot(quat)
+        hand = self.handedness[idx].item()
+        acc, lin_acc, rel_rot = handedness_flip(acc, lin_acc, rel_rot, hand)
 
-        hand = torch.from_numpy(self.handedness[idx])
         gesture = LBL2ID[self.gestures[idx].item()]
         gesture = torch.tensor(gesture, dtype=torch.long)
         acc, lin_acc, rel_rot = [
