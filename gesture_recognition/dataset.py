@@ -36,6 +36,32 @@ LBL2ID = {
 
 N_CLASSES = len(LBL2ID)
 
+def impute_quat(quat: npt.NDArray, dtype):
+    quat = np.where(np.isnan(quat), np.array([1,0,0,0], dtype=dtype), quat)
+    return quat
+
+def remove_gravity(acc: npt.NDArray, quat: npt.NDArray) -> npt.NDArray:
+    """Removes effect of gravity from acceleration"""
+    rot = R.from_quat(quat, scalar_first=True)
+    gravity_world = np.array([0, 0, 9.81], dtype=acc.dtype)
+    gravity_sensor_frame = rot.apply(gravity_world, inverse=True)
+    lin_acc = acc - gravity_sensor_frame
+    return lin_acc.astype(quat.dtype)
+
+def get_rel_rot(quat: npt.NDArray) -> npt.NDArray:
+    rot = R.from_quat(quat, scalar_first=True)
+    rel = (rot[:-1].inv() * rot[1:]).as_rotvec()
+    pad = np.zeros((1,3), dtype=quat.dtype)
+    rel = np.concatenate([pad, rel], axis=0)
+    return rel.astype(quat.dtype)
+
+def handedness_flip(acc, lin_acc, rel_rot, hand: int):
+    if hand==0:
+        acc[:, 0] *= -1   # flips x component
+        lin_acc[:, 0] *= -1
+        rel_rot[:, 1:] *= -1   # flips y & z components
+    return acc, lin_acc, rel_rot
+
 class GestureDataset(Dataset):
     def __init__(self, sensor_dir: str|Path, max_seq_len: int=128):
         if isinstance(sensor_dir, str):
@@ -52,7 +78,7 @@ class GestureDataset(Dataset):
     def __len__(self) -> int:
         return self.seq_starts.shape[0]
     
-    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, ...]:
         start = self.seq_starts[idx]
         seq_len = self.seq_lens[idx]
         end = start+seq_len
@@ -66,44 +92,17 @@ class GestureDataset(Dataset):
         imu = np.concatenate([pre_pad, imu], axis=0)
 
         acc, quat = imu[:, :3], imu[:, 3:]
-        quat = self._impute_quat(quat, dtype=imu.dtype)
-        lin_acc = self._remove_gravity(acc, quat)
-        rel_rot = self._get_rel_rot(quat)
-        hand = self.handedness[idx].item()
-        acc, lin_acc, rel_rot = self._handedness_flip(acc, lin_acc, rel_rot, hand)
+        quat = impute_quat(quat, dtype=imu.dtype)
+        lin_acc = remove_gravity(acc, quat)
+        rel_rot = get_rel_rot(quat)
 
+        hand = torch.from_numpy(self.handedness[idx])
         gesture = LBL2ID[self.gestures[idx].item()]
         gesture = torch.tensor(gesture, dtype=torch.long)
         acc, lin_acc, rel_rot = [
             rearrange(torch.from_numpy(x), "L c -> c L") for x in (acc, lin_acc, rel_rot)
         ]
-        return acc, lin_acc, rel_rot, gesture
-    
-    def _impute_quat(self, quat: npt.NDArray, dtype):
-        quat = np.where(np.isnan(quat), np.array([1,0,0,0], dtype=dtype), quat)
-        return quat
-    
-    def _remove_gravity(self, acc: npt.NDArray, quat: npt.NDArray) -> npt.NDArray:
-        """Removes effect of gravity from acceleration"""
-        rot = R.from_quat(quat, scalar_first=True)
-        gravity_world = np.array([0, 0, 9.81], dtype=acc.dtype)
-        gravity_sensor_frame = rot.apply(gravity_world, inverse=True)
-        lin_acc = acc - gravity_sensor_frame
-        return lin_acc.astype(quat.dtype)
-
-    def _get_rel_rot(self, quat: npt.NDArray) -> npt.NDArray:
-        rot = R.from_quat(quat, scalar_first=True)
-        rel = (rot[:-1].inv() * rot[1:]).as_rotvec()
-        pad = np.zeros((1,3), dtype=quat.dtype)
-        rel = np.concatenate([pad, rel], axis=0)
-        return rel.astype(quat.dtype)
-
-    def _handedness_flip(self, acc, lin_acc, rel_rot, hand: int):
-        if hand==0:
-            acc[:, 0] *= -1   # flips x component
-            lin_acc[:, 0] *= -1
-            rel_rot[:, 1:] *= -1   # flips y & z components
-        return acc, lin_acc, rel_rot
+        return acc, lin_acc, rel_rot, hand, gesture
     
     def collate(self, batch: list[tuple[Tensor, ...]], device=None, mixup: MixUp|None=None):
         """Collates and moves the batch to device; also does mixup if `mixup_alpha>0`"""
