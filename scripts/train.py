@@ -109,8 +109,8 @@ def valid_loop():
     tot_loss, tot_samples = 0, 0
     all_preds, all_targs = [], []
     for *xs, y in tqdm(valid_dl, desc="Validating"):
-        xs = [torch.stack(x).to(device, non_blocking=True) for x in xs]
-        y = torch.stack(y).to(device, non_blocking=True)
+        xs = tuple(x.to(device, non_blocking=True) for x in xs)
+        y = y.to(device, non_blocking=True)
         logits = model(*xs)
         preds = torch.argmax(logits, dim=-1)
         all_preds.append(preds.cpu())
@@ -131,8 +131,8 @@ train_dl_iter = iter(train_dl)
 
 for step in range(num_steps):
     *xs, y = next(train_dl_iter)
-    xs = [torch.stack(x).to(device, non_blocking=True) for x in xs]
-    y = torch.stack(y).to(device, non_blocking=True)
+    xs = tuple(x.to(device, non_blocking=True) for x in xs)
+    y = y.to(device, non_blocking=True)
     *xs, y = mixup(*xs, y=y)
     
     lr = schedule_lr(
