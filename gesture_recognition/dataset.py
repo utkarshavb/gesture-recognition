@@ -111,10 +111,9 @@ class GestureDataset(Dataset):
         ]
         return acc, lin_acc, rel_rot, gesture
 
-    def get_split(self, num_folds: int=5, seed: int=42):
-        """Returns a train/valid split"""
+    def get_splits(self, num_folds: int=5, seed: int=42):
         dummy_x = self.seq_lens.reshape(-1,1)
         splits = StratifiedGroupKFold(
             num_folds, shuffle=True, random_state=seed
         ).split(dummy_x, self.gestures, self.subjects)
-        return next(iter(splits))
+        return splits
