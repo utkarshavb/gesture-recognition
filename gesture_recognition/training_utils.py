@@ -85,9 +85,10 @@ def save_checkpoint(
     torch.save(obj, out)
 
 def load_checkpoint(
-    src: str|Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer
+    src: str|Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer|None=None
 ) -> int:
     obj = torch.load(src)
     model.load_state_dict(obj['model'])
-    optimizer.load_state_dict(obj['optimizer'])
+    if optimizer is not None and 'optimizer' in obj:
+        optimizer.load_state_dict(obj['optimizer'])
     return obj["it"]

@@ -11,9 +11,6 @@ import numpy.typing as npt
 from torch import Tensor
 from jaxtyping import Float, Int
 
-ACC_COLS = ['acc_x','acc_y','acc_z']
-ROT_COLS = ['rot_w','rot_x','rot_y','rot_z']
-
 LBL2ID = {
     # Target gestures
     "Above ear - pull hair": 0,
@@ -40,7 +37,8 @@ LBL2ID = {
 N_CLASSES = len(LBL2ID)
 
 def impute_quat(quat: npt.NDArray, dtype):
-    quat = np.where(np.isnan(quat), np.array([1,0,0,0], dtype=dtype), quat)
+    fill_arr = np.array([1,0,0,0], dtype=dtype)
+    quat = np.where(np.isnan(quat), fill_arr, quat)
     return quat
 
 def remove_gravity(acc: npt.NDArray, quat: npt.NDArray) -> npt.NDArray:
@@ -68,7 +66,7 @@ def handedness_flip(acc, lin_acc, rel_rot, hand: int):
 def pad_or_trunc(*xs: Float[npt.NDArray, "seq_len c"], L=128) -> tuple[Float[npt.NDArray, "L c"], ...]:
     seq_len, dtype = xs[0].shape[0], xs[0].dtype
     if seq_len > L:
-        xs = tuple(x[-seq_len] for x in xs)
+        xs = tuple(x[-L:,:] for x in xs)
     else:
         pad_len = L-seq_len
         pre_pad = np.full((pad_len, 3), 0, dtype=dtype)
