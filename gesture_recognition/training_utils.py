@@ -71,7 +71,12 @@ class MixUp:
         self.C = n_classes
         self.distrib = torch.distributions.Beta(alpha, alpha) if alpha>0 else None
 
-    def __call__(self, *xs: Float[Tensor, "bs 3 L"], y: Int[Tensor, "bs"]):
+    def _expand_lam(self, lam: Float[Tensor, "bs"], x: Tensor):
+        """Exapands dimensions of `lam` to be broadcastable to `x`"""
+        shape = [lam.size(0)] + [1]*(x.ndim-1)
+        return lam.view(*shape)
+
+    def __call__(self, *xs: Tensor, y: Int[Tensor, "bs"]):
         if self.distrib is None:
             return *xs, y
         
@@ -80,7 +85,7 @@ class MixUp:
         lam = torch.where(lam>0.5, lam, 1-lam)
         perm = torch.randperm(bs, device=device)
 
-        xs_mix = [torch.lerp(x, x[perm], weight=lam[:, None, None]) for x in xs]
+        xs_mix = [torch.lerp(x, x[perm], weight=self._expand_lam(lam, x)) for x in xs]
         y = torch.nn.functional.one_hot(y, self.C).to(lam.dtype)
         y_mix = torch.lerp(y, y[perm], weight=lam[:, None])
 
