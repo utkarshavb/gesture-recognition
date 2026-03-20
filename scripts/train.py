@@ -16,30 +16,30 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--sensor-dir", type=str, default="data/processed")
 # run state
 parser.add_argument("--run", type=str, default=None, help="Name of the wandb run")
-parser.add_argument("--wandb-group", type=str, default="test")
+parser.add_argument("--wandb-group", type=str, default="leaderboard")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--run-cv", action="store_true")
 parser.add_argument("--lr-range-test", action="store_true", help="Runs LR range test by setting `warmup_frac=1` and `warmup_strat='exp'`")
 parser.add_argument("--save-ckpt", action="store_true")
 parser.add_argument("-v", "--verbose", action="store_true")
 # model
-parser.add_argument("--num-layers", type=int, default=2)
+parser.add_argument("--num-layers", type=int, default=4)
 parser.add_argument("--seq-len", type=int, default=96)
 parser.add_argument("--d-model", type=int, default=64)
 # training horizon
-parser.add_argument("--epochs", type=int, default=40)
+parser.add_argument("--epochs", type=int, default=30)
 parser.add_argument("--bs", type=int, default=128)
 # optimization
-parser.add_argument("--lr-max", type=float, default=3e-2)
+parser.add_argument("--lr-max", type=float, default=0.03)
 parser.add_argument("--init-lr-frac", type=float, default=1e-2)
 parser.add_argument("--final-lr-frac", type=float, default=1e-3)
 parser.add_argument("--warmup-frac", type=float, default=0.1)
 parser.add_argument("--momentum", type=float, default=0.95)
 # regularization
-parser.add_argument("--wd", type=float, default=1e-1)
+parser.add_argument("--wd", type=float, default=0.06)
 parser.add_argument("--p", type=float, default=0.0, help="probability for dropout")
 parser.add_argument("--p-flip", type=float, default=0.5, help="probability for flipping the sequences")
-parser.add_argument("--mixup-alpha", type=float, default=0.0)
+parser.add_argument("--mixup-alpha", type=float, default=0.11)
 args = parser.parse_args()
 
 # ----------------------------------------------------------------------------------------------------
@@ -93,10 +93,13 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
         Subset(dset, train_idxs), batch_size=bs, shuffle=True,
         pin_memory=(device=="cuda"), num_workers=num_workers
     )
-    valid_dl = DataLoader(
-        Subset(dset, valid_idxs), batch_size=bs, shuffle=False,
-        pin_memory=(device=="cuda"), num_workers=num_workers
-    )
+    if not args.lr_range_test:
+        valid_dl = DataLoader(
+            Subset(dset, valid_idxs), batch_size=bs, shuffle=False,
+            pin_memory=(device=="cuda"), num_workers=num_workers
+        )
+    else:
+        valid_dl = None
     steps_per_epoch = len(train_dl)
     num_steps = steps_per_epoch*args.epochs
 
@@ -115,9 +118,9 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
     print(f"\nStarting run {run.name}")
     start = time.time()
     valid_loss, valid_f1 = train(
-        train_dl, valid_dl, model, mixup=mixup, optimizer=optimizer,
-        num_steps=num_steps, lr_scheduler=lr_scheduler, log_fn=run.log,
-        p_flip=args.p_flip, device=device, verbose=args.verbose,
+        model, train_dl, num_steps=num_steps, optimizer=optimizer,
+        lr_scheduler=lr_scheduler, mixup=mixup, valid_dl=valid_dl,
+        log_fn=run.log, p_flip=args.p_flip, device=device, verbose=args.verbose,
     )
     run.finish()
     tot_time = (time.time()-start)/60

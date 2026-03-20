@@ -2,6 +2,7 @@ from tqdm import tqdm
 import torch
 from collections.abc import Callable
 from torch.utils.data import DataLoader
+from torch.optim import Optimizer
 from gesture_recognition.model import Model
 from gesture_recognition.training_utils import (
     compute_loss, hierarchical_f1, MixUp, upside_down_aug
@@ -32,9 +33,9 @@ def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
     return tot_loss, f1
 
 def train(
-    train_dl: DataLoader, valid_dl: DataLoader, model: Model, mixup: MixUp,
-    optimizer: torch.optim.Optimizer, num_steps: int, lr_scheduler: Callable,
-    log_fn: Callable, p_flip: float=0.0, device: str|None=None, verbose: bool=True
+    model: Model, train_dl: DataLoader, num_steps: int, optimizer: Optimizer,
+    lr_scheduler: Callable, mixup: MixUp, valid_dl: DataLoader|None=None,
+    log_fn: Callable|None=None, p_flip: float=0.0, device: str="cpu", verbose: bool=True
 ):
     model.train()
     train_dl_iter = iter(train_dl)
@@ -62,16 +63,19 @@ def train(
 
         # log
         log = {"train/loss":loss.detach().item(), "lr": lr}
-        if (step+1) % steps_per_epoch == 0:   # end of epoch
-            # TODO: compute and log metric on training set
-            valid_loss, valid_f1 = valid_loop(valid_dl, model, device)
-            final_loss, final_f1 = valid_loss, valid_f1
-            log["valid/f1"] = valid_f1
-            log["valid/loss"] = valid_loss
+        end_of_epoch = (step+1)%steps_per_epoch==0
+        if end_of_epoch:
             train_dl_iter = iter(train_dl)
+            # TODO: compute and log metric on training set
+            if valid_dl is not None:
+                valid_loss, valid_f1 = valid_loop(valid_dl, model, device)
+                final_loss, final_f1 = valid_loss, valid_f1
+                log["valid/f1"] = valid_f1
+                log["valid/loss"] = valid_loss
         log_str = " | ".join(f"{k}={v:.4f}" for k,v in log.items())
         if verbose:
             print(f"{step=}/{num_steps} | " + log_str)
-        log_fn(log, step=step)
+        if log_fn is not None:
+            log_fn(log, step=step)
 
     return final_loss, final_f1
