@@ -6,40 +6,6 @@ from sklearn.metrics import f1_score
 from torch import Tensor
 from jaxtyping import Float, Int
 
-def hierarchical_f1(preds: Int[Tensor, "bs"], targs: Int[Tensor, "bs"]):
-    """Assumes that 0-7 are target gestures while others are non-target"""
-    # Compute binary F1 (Target vs Non-Target)
-    y_true_bi, y_pred_bi = targs < 8, preds < 8
-    f1_binary = f1_score(
-        y_true_bi, y_pred_bi, pos_label=True, zero_division=0, average='binary'
-    )
-
-    # Compute macro F1 over all gesture classes
-    y_true_mc, y_pred_mc = torch.where(targs<8, targs, 8), torch.where(preds<8, preds, 8)
-    f1_macro = f1_score(y_true_mc, y_pred_mc, zero_division=0, average='macro')
-
-    return 0.5*f1_binary + 0.5*f1_macro
-
-class MixUp:
-    def __init__(self, n_classes: int, alpha: float=0.4):
-        self.C = n_classes
-        self.distrib = torch.distributions.Beta(alpha, alpha) if alpha>0 else None
-
-    def __call__(self, *xs: Float[Tensor, "bs 3 L"], y: Int[Tensor, "bs"]):
-        if self.distrib is None:
-            return *xs, y
-        
-        bs, device = xs[0].size(0), xs[0].device
-        lam = self.distrib.sample((bs,)).to(device)
-        lam = torch.where(lam>0.5, lam, 1-lam)
-        perm = torch.randperm(bs, device=device)
-
-        xs_mix = [torch.lerp(x, x[perm], weight=lam[:, None, None]) for x in xs]
-        y = torch.nn.functional.one_hot(y, self.C).to(lam.dtype)
-        y_mix = torch.lerp(y, y[perm], weight=lam[:, None])
-
-        return *xs_mix, y_mix
-
 def compute_loss(logits: Float[Tensor, "bs n_classes"], targs: Tensor) -> Tensor:
     """Implements soft-target cross entropy. `targs` can be class idxs or probs"""
     if len(targs.shape) == 1:
@@ -77,6 +43,48 @@ def schedule_lr(
         cooldown_steps = last_step-warmup_steps
         p = (step-warmup_steps)/cooldown_steps
         return final_lr + 0.5*(lr_max-final_lr)*(1+math.cos(math.pi*p))
+
+def hierarchical_f1(preds: Int[Tensor, "bs"], targs: Int[Tensor, "bs"]):
+    """Assumes that 0-7 are target gestures while others are non-target"""
+    # Compute binary F1 (Target vs Non-Target)
+    y_true_bi, y_pred_bi = targs < 8, preds < 8
+    f1_binary = f1_score(
+        y_true_bi, y_pred_bi, pos_label=True, zero_division=0, average='binary'
+    )
+
+    # Compute macro F1 over all gesture classes
+    y_true_mc, y_pred_mc = torch.where(targs<8, targs, 8), torch.where(preds<8, preds, 8)
+    f1_macro = f1_score(y_true_mc, y_pred_mc, zero_division=0, average='macro')
+
+    return 0.5*(f1_binary+f1_macro)
+
+def upside_down_aug(*xs: Float[Tensor, "bs 3 L"], p: float=0.0) -> tuple[Float[Tensor, "bs 3 L"], ...]:
+    """NOTE: flips the sequences inplace"""
+    bs, device = xs[0].size(0), xs[0].device
+    mask = torch.rand(bs, device=device) < p
+    for x in xs:
+        x[mask, :2, :] *= -1
+    return xs
+
+class MixUp:
+    def __init__(self, n_classes: int, alpha: float=0.4):
+        self.C = n_classes
+        self.distrib = torch.distributions.Beta(alpha, alpha) if alpha>0 else None
+
+    def __call__(self, *xs: Float[Tensor, "bs 3 L"], y: Int[Tensor, "bs"]):
+        if self.distrib is None:
+            return *xs, y
+        
+        bs, device = xs[0].size(0), xs[0].device
+        lam = self.distrib.sample((bs,)).to(device)
+        lam = torch.where(lam>0.5, lam, 1-lam)
+        perm = torch.randperm(bs, device=device)
+
+        xs_mix = [torch.lerp(x, x[perm], weight=lam[:, None, None]) for x in xs]
+        y = torch.nn.functional.one_hot(y, self.C).to(lam.dtype)
+        y_mix = torch.lerp(y, y[perm], weight=lam[:, None])
+
+        return *xs_mix, y_mix
 
 def save_checkpoint(
     model: torch.nn.Module, optimizer: torch.optim.Optimizer, it: int, out: str|Path

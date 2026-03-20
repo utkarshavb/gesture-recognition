@@ -3,7 +3,9 @@ import torch
 from collections.abc import Callable
 from torch.utils.data import DataLoader
 from gesture_recognition.model import Model
-from gesture_recognition.training_utils import compute_loss, hierarchical_f1, MixUp
+from gesture_recognition.training_utils import (
+    compute_loss, hierarchical_f1, MixUp, upside_down_aug
+)
 
 @torch.inference_mode()
 def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
@@ -32,7 +34,7 @@ def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
 def train(
     train_dl: DataLoader, valid_dl: DataLoader, model: Model, mixup: MixUp,
     optimizer: torch.optim.Optimizer, num_steps: int, lr_scheduler: Callable,
-    log_fn: Callable, device: str|None=None, verbose: bool=True
+    log_fn: Callable, p_flip: float=0.0, device: str|None=None, verbose: bool=True
 ):
     model.train()
     train_dl_iter = iter(train_dl)
@@ -43,6 +45,7 @@ def train(
         *xs, y = next(train_dl_iter)
         xs = tuple(x.to(device, non_blocking=True) for x in xs)
         y = y.to(device, non_blocking=True)
+        xs = upside_down_aug(*xs, p=p_flip)
         *xs, y = mixup(*xs, y=y)
         
         lr = lr_scheduler(step)

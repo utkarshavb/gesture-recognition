@@ -37,7 +37,8 @@ parser.add_argument("--warmup-frac", type=float, default=0.1)
 parser.add_argument("--momentum", type=float, default=0.95)
 # regularization
 parser.add_argument("--wd", type=float, default=1e-1)
-parser.add_argument("--p", type=float, default=0.0)
+parser.add_argument("--p", type=float, default=0.0, help="probability for dropout")
+parser.add_argument("--p-flip", type=float, default=0.5, help="probability for flipping the sequences")
 parser.add_argument("--mixup-alpha", type=float, default=0.0)
 args = parser.parse_args()
 
@@ -106,16 +107,17 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
         final_lr_frac=args.final_lr_frac, warmup_frac=args.warmup_frac, warmup_strat=warmup_strat
     )
 
-    run_name = f"{args.run}-fold{i}"
+    run_name = f"{args.run}-fold{i}" if args.run_cv else args.run
     run = wandb.init(
         project="gesture_recognition", name=run_name, group=args.wandb_group, config=config
     )
     
-    print(f"\nStarting run {run_name}")
+    print(f"\nStarting run {run.name}")
     start = time.time()
     valid_loss, valid_f1 = train(
-        train_dl, valid_dl, model=model, mixup=mixup, optimizer=optimizer, num_steps=num_steps,
-        lr_scheduler=lr_scheduler, log_fn=run.log, device=device, verbose=args.verbose
+        train_dl, valid_dl, model, mixup=mixup, optimizer=optimizer,
+        num_steps=num_steps, lr_scheduler=lr_scheduler, log_fn=run.log,
+        p_flip=args.p_flip, device=device, verbose=args.verbose,
     )
     run.finish()
     tot_time = (time.time()-start)/60
@@ -123,5 +125,5 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
     print(f"{tot_time=:.3f} minutes | {valid_loss=:.3f} | {valid_f1=:.3f}")
 
     if args.save_ckpt:
-        ckpt_path = Path(f"models/{run_name}.tar")
+        ckpt_path = Path(f"models/{run.name}.tar")
         save_checkpoint(model, optimizer, num_steps, ckpt_path)
