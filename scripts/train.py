@@ -37,8 +37,9 @@ parser.add_argument("--warmup-frac", type=float, default=0.1)
 parser.add_argument("--momentum", type=float, default=0.95)
 # regularization
 parser.add_argument("--wd", type=float, default=0.06)
-parser.add_argument("--p", type=float, default=0.0, help="probability for dropout")
+parser.add_argument("--p-dropout", type=float, default=0.0, help="probability for dropout")
 parser.add_argument("--p-flip", type=float, default=0.5, help="probability for flipping the sequences")
+parser.add_argument("--p-proximity-drop", type=float, default=0.45)
 parser.add_argument("--mixup-alpha", type=float, default=0.11)
 args = parser.parse_args()
 
@@ -90,12 +91,12 @@ for k in ["run","wandb_group","sensor_dir"]:
 # ----------------------------------------------------------------------------------------------------
 for i, (train_idxs, valid_idxs) in enumerate(splits):
     train_dl = DataLoader(
-        Subset(dset, train_idxs), batch_size=bs, shuffle=True,
+        Subset(dset, train_idxs), batch_size=bs, shuffle=True, drop_last=True, 
         pin_memory=(device=="cuda"), num_workers=num_workers
     )
     if not args.lr_range_test:
         valid_dl = DataLoader(
-            Subset(dset, valid_idxs), batch_size=bs, shuffle=False,
+            Subset(dset, valid_idxs), batch_size=bs, shuffle=False, drop_last=False,
             pin_memory=(device=="cuda"), num_workers=num_workers
         )
     else:
@@ -103,7 +104,7 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
     steps_per_epoch = len(train_dl)
     num_steps = steps_per_epoch*args.epochs
 
-    model = Model(num_layers, d_model, N_CLASSES, p=args.p).to(device)
+    model = Model(num_layers, d_model, N_CLASSES, p=args.p_dropout).to(device)
     optimizer = AdamW(model.parameters(), weight_decay=args.wd, betas=betas)
     lr_scheduler = partial(
         schedule_lr, lr_max=lr_max, tot_steps=num_steps, init_lr_frac=args.init_lr_frac,
@@ -118,9 +119,9 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
     print(f"\nStarting run {run.name}")
     start = time.time()
     valid_loss, valid_f1 = train(
-        model, train_dl, num_steps=num_steps, optimizer=optimizer,
-        lr_scheduler=lr_scheduler, mixup=mixup, valid_dl=valid_dl,
-        log_fn=run.log, p_flip=args.p_flip, device=device, verbose=args.verbose,
+        model, train_dl, num_steps=num_steps, optimizer=optimizer, lr_scheduler=lr_scheduler,
+        mixup=mixup, valid_dl=valid_dl, log_fn=run.log, p_flip=args.p_flip, device=device,
+        p_proximity_drop=args.p_proximity_drop, verbose=args.verbose,
     )
     run.finish()
     tot_time = (time.time()-start)/60

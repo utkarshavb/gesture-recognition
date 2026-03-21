@@ -58,13 +58,26 @@ def hierarchical_f1(preds: Int[Tensor, "bs"], targs: Int[Tensor, "bs"]):
 
     return 0.5*(f1_binary+f1_macro)
 
-def upside_down_aug(*xs: Float[Tensor, "bs 3 L"], p: float=0.0) -> tuple[Float[Tensor, "bs 3 L"], ...]:
-    """NOTE: flips the sequences inplace"""
-    bs, device = xs[0].size(0), xs[0].device
+def upside_down_aug(
+    *imus: Float[Tensor, "bs 3 L"], thms: Float[Tensor, "bs 5 L"],
+    tofs: Float[Tensor, "bs L 5 8 8"], p: float=0.0
+) -> tuple[Tensor, ...]:
+    bs, device = thms.size(0), thms.device
     mask = torch.rand(bs, device=device) < p
-    for x in xs:
+
+    # clone the tensors
+    out_imus = tuple(x.clone() for x in imus)
+    out_thms = thms.clone()
+    out_tofs = tofs.clone()
+
+    for x in out_imus:
         x[mask, :2, :] *= -1
-    return xs
+    perm = [0, 3, 4, 1, 2]   # swap 2nd and 3rd with 4th and 5th sensors respectively
+    out_thms[mask] = out_thms[mask][:, perm]
+    out_tofs[mask] = out_tofs[mask][:, :, perm]
+    out_tofs[mask] = out_tofs[mask].flip(-2, -1)   # rotate each tof sensor by 180
+    
+    return *out_imus, out_thms, out_tofs
 
 class MixUp:
     def __init__(self, n_classes: int, alpha: float=0.4):
@@ -90,6 +103,23 @@ class MixUp:
         y_mix = torch.lerp(y, y[perm], weight=lam[:, None])
 
         return *xs_mix, y_mix
+
+def modality_dropout(
+    thms: Float[Tensor, "bs 5 L"], tofs: Float[Tensor, "bs L 5 8 8"],
+    p: float = 0.4, training: bool=True
+) -> tuple[Tensor, ...]:
+    """Drops proximity sensors with probability `p`"""
+    if not training:
+        p = 0.0
+    bs, device = thms.size(0), thms.device
+    drop_mask = torch.rand(bs, device=device) < p
+    absent = tofs.isnan().any(dim=(1,2,3,4)) | thms.isnan().any(dim=(1,2))
+
+    drop_mask = drop_mask | absent
+    thms[drop_mask] = 0
+    tofs[drop_mask] = 0
+
+    return thms, tofs, ~drop_mask
 
 def save_checkpoint(
     model: torch.nn.Module, optimizer: torch.optim.Optimizer, it: int, out: str|Path

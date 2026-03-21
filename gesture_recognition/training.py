@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from gesture_recognition.model import Model
 from gesture_recognition.training_utils import (
-    compute_loss, hierarchical_f1, MixUp, upside_down_aug
+    compute_loss, hierarchical_f1, MixUp, upside_down_aug, modality_dropout
 )
 
 @torch.inference_mode()
@@ -13,10 +13,11 @@ def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
     model.eval()
     tot_loss, tot_samples = 0, 0
     all_preds, all_targs = [], []
-    for *xs, y in tqdm(dl, desc="Validating", leave=False):
-        xs = tuple(x.to(device, non_blocking=True) for x in xs)
+    for *imus, thms, tofs, y in tqdm(dl, desc="Validating", leave=False):
+        *imus, thms, tofs = tuple(x.to(device, non_blocking=True) for x in [*imus,thms,tofs])
         y = y.to(device, non_blocking=True)
-        logits = model(*xs)
+        thms, tofs, proximity_mask = modality_dropout(thms, tofs, training=False)
+        logits = model(*imus, thms=thms, tofs=tofs, proximity_mask=proximity_mask)
         preds = torch.argmax(logits, dim=-1)
         all_preds.append(preds.cpu())
         all_targs.append(y.cpu())
@@ -35,7 +36,8 @@ def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
 def train(
     model: Model, train_dl: DataLoader, num_steps: int, optimizer: Optimizer,
     lr_scheduler: Callable, mixup: MixUp, valid_dl: DataLoader|None=None,
-    log_fn: Callable|None=None, p_flip: float=0.0, device: str="cpu", verbose: bool=True
+    log_fn: Callable|None=None, p_flip: float=0.0, p_proximity_drop: float=0.4,
+    device: str="cpu", verbose: bool=True
 ):
     model.train()
     train_dl_iter = iter(train_dl)
@@ -43,19 +45,21 @@ def train(
     final_loss, final_f1 = 0, 0
 
     for step in range(num_steps):
-        *xs, y = next(train_dl_iter)
-        xs = tuple(x.to(device, non_blocking=True) for x in xs)
+        *imus, thms, tofs, y = next(train_dl_iter)
+        *imus, thms, tofs = tuple(x.to(device, non_blocking=True) for x in [*imus,thms,tofs])
         y = y.to(device, non_blocking=True)
-        xs = upside_down_aug(*xs, p=p_flip)
-        *xs, y = mixup(*xs, y=y)
+        *imus, thms, tofs = upside_down_aug(*imus, thms=thms, tofs=tofs, p=p_flip)
+        thms, tofs, proximity_mask = modality_dropout(thms, tofs, p=p_proximity_drop)
+        *imus, thms, tofs, y = mixup(*imus, thms, tofs, y=y)
         
         lr = lr_scheduler(step)
         for g in optimizer.param_groups:
             g["lr"] = lr
         
-        logits = model(*xs)
+        logits = model(*imus, thms=thms, tofs=tofs, proximity_mask=proximity_mask)
         loss = compute_loss(logits, y)
         if not torch.isfinite(loss).item():
+            print("loss not finite, terminating training")
             break
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
