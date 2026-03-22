@@ -77,11 +77,9 @@ A fully convolutional **multimodal fusion network**:
 
 ### Data Augmentation
 
-* **Orientation Flip Augmentation**
-  * Simulates incorrectly worn device
+* **Orientation Flip Augmentation:** Simulates incorrectly worn device
 * **MixUp (time-series aware)**
-* **Modality Dropout**
-  * Simulates missing thermal/ToF sensors
+* **Modality Dropout:** Simulates missing thermal/ToF sensors
 
 ### Validation Strategy
 
@@ -109,13 +107,13 @@ A fully convolutional **multimodal fusion network**:
 ## Results
 
 * **Private Leaderboard Score:** 0.815 (Hierarchical F1)
-* **Leaderboard Position:** Top 63%
+* **Leaderboard Position:** Top 35%
 
 ## Setup and Usage
 
 This project uses **uv** for dependency management and environment setup.
 
-### 1. Create the environment
+**1. Create the environment**
 
 CPU:
 
@@ -129,19 +127,19 @@ CUDA 12.8:
 uv sync --extra cu128 --group dev
 ```
 
-### 2. Activate the environment
+**2. Activate the environment**
 
 ```bash
 source .venv/bin/activate
 ```
 
-### 3. Train the model
+**3. Train the model**
 
 ```bash
 python scripts/train.py --sensor-dir data/processed --run baseline
 ```
 
-### 4. Run cross-validation
+**4. Run cross-validation**
 
 ```bash
 python scripts/train.py --run-cv --run cv_experiment
