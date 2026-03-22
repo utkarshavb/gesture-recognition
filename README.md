@@ -147,8 +147,8 @@ python scripts/train.py --run-cv --run cv_experiment
 
 ## Acknowledgements
 
-* Child Mind Institute (CMI)
-* Healthy Brain Network (HBN)
+* [Child Mind Institute (CMI)](https://www.kaggle.com/organizations/childmindinstitute)
+* [Healthy Brain Network (HBN)](https://healthybrainnetwork.org/)
 * Kaggle community
 
 ## License
