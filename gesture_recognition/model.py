@@ -99,13 +99,22 @@ class AttentionPooling(nn.Module):
         return pooled
 
 class Model(nn.Module):
-    def __init__(self, num_layers: int, d_model: int, n_classes: int, p=0.0):
+    def __init__(
+        self, num_layers: int, d_model: int, n_classes: int, p=0.0, uni_modal_mode=False
+    ):
         super().__init__()
-        self.cfg = dict(num_layers=num_layers, d_model=d_model, n_classes=n_classes, p=p)
+        self.cfg = dict(
+            num_layers=num_layers, d_model=d_model, p=p,
+            n_classes=n_classes, uni_modal_mode=uni_modal_mode
+        )
         self.imu_stems = nn.ModuleList(TemporalStem(3, d_model) for _ in range(3))
-        self.thm_stem = TemporalStem(5, d_model//2)
-        self.tof_stem = ToFStem(d_model//2)
-        self.fusion = SensorFusion(d_model, d_model//2)
+        if not uni_modal_mode:
+            self.thm_stem = TemporalStem(5, d_model//2)
+            self.tof_stem = ToFStem(d_model//2)
+        if uni_modal_mode:
+            self.fusion = ConvBlock(3*d_model, d_model, ks=1)   # simple projection
+        else:
+            self.fusion = SensorFusion(d_model, d_model//2)
         self.encoder = nn.Sequential(
             *[ResBlock(d_model, d_model, p=p) for _ in range(num_layers)],
         )
@@ -140,8 +149,13 @@ class Model(nn.Module):
     ) -> Float[Tensor, "bs n_classes"]:
         imu_f_li = [stem(x) for x, stem in zip(imus, self.imu_stems)]
         imu_fs: Float[Tensor, "bs d_model*3 L"] = torch.cat(imu_f_li, dim=1)
-        thm_fs: Float[Tensor, "bs d_model//2 L"] = self.thm_stem(thms)
-        tof_fs: Float[Tensor, "bs d_model//2 L"] = self.tof_stem(tofs)
-        fused_fs = self.fusion(imu_fs, thm_fs, tof_fs, proximity_mask)
+
+        if not self.config["uni_modal_mode"]:
+            thm_fs: Float[Tensor, "bs d_model//2 L"] = self.thm_stem(thms)
+            tof_fs: Float[Tensor, "bs d_model//2 L"] = self.tof_stem(tofs)
+            fused_fs = self.fusion(imu_fs, thm_fs, tof_fs, proximity_mask)
+        else:
+            fused_fs = self.fusion(imu_fs)
+        
         logits = self.head(self.encoder(fused_fs))
         return logits

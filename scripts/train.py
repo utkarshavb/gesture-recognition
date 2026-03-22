@@ -19,6 +19,7 @@ parser.add_argument("--run", type=str, default=None, help="Name of the wandb run
 parser.add_argument("--wandb-group", type=str, default="leaderboard")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--run-cv", action="store_true")
+parser.add_argument("--uni-modal-mode", action="store_true")
 parser.add_argument("--lr-range-test", action="store_true", help="Runs LR range test by setting `warmup_frac=1` and `warmup_strat='exp'`")
 parser.add_argument("--save-ckpt", action="store_true")
 parser.add_argument("-v", "--verbose", action="store_true")
@@ -39,7 +40,7 @@ parser.add_argument("--momentum", type=float, default=0.935)
 parser.add_argument("--wd", type=float, default=2e-3)
 parser.add_argument("--p-dropout", type=float, default=0.09, help="probability for dropout")
 parser.add_argument("--p-flip", type=float, default=0.5, help="probability for flipping the sequences")
-parser.add_argument("--p-proximity-drop", type=float, default=0.45)
+parser.add_argument("--p-proximity-drop", type=float, default=0.5)
 parser.add_argument("--mixup-alpha", type=float, default=-1)
 args = parser.parse_args()
 
@@ -104,7 +105,9 @@ for i, (train_idxs, valid_idxs) in enumerate(splits):
     steps_per_epoch = len(train_dl)
     num_steps = steps_per_epoch*args.epochs
 
-    model = Model(num_layers, d_model, N_CLASSES, p=args.p_dropout).to(device)
+    model = Model(
+        num_layers, d_model, N_CLASSES, p=args.p_dropout, uni_modal_mode=args.uni_modal_mode
+    ).to(device)
     optimizer = AdamW(model.parameters(), weight_decay=args.wd, betas=betas)
     lr_scheduler = partial(
         schedule_lr, lr_max=lr_max, tot_steps=num_steps, init_lr_frac=args.init_lr_frac,
