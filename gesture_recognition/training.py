@@ -12,26 +12,38 @@ from gesture_recognition.training_utils import (
 def valid_loop(dl: DataLoader, model: Model, device: str|None=None):
     model.eval()
     tot_loss, tot_samples = 0, 0
-    all_preds, all_targs = [], []
+    all_preds, all_forced_imu_preds, all_targs = [], [], []
+
     for *imus, thms, tofs, y in tqdm(dl, desc="Validating", leave=False):
         *imus, thms, tofs = tuple(x.to(device, non_blocking=True) for x in [*imus,thms,tofs])
         y = y.to(device, non_blocking=True)
+        all_targs.append(y.cpu())
+
         thms, tofs, proximity_mask = modality_dropout(thms, tofs, training=False)
         logits = model(*imus, thms=thms, tofs=tofs, proximity_mask=proximity_mask)
         preds = torch.argmax(logits, dim=-1)
         all_preds.append(preds.cpu())
-        all_targs.append(y.cpu())
+
+        forced_thms, forced_tofs, forced_proximity_mask = modality_dropout(thms, tofs, p=0.5)
+        forced_logits = model(
+            *imus, thms=forced_thms, tofs=forced_tofs, proximity_mask=forced_proximity_mask
+        )
+        forced_preds = torch.argmax(forced_logits, dim=-1)
+        all_forced_imu_preds.append(forced_preds.cpu())
         
         loss = compute_loss(logits, y)
         samples = y.size(0)
         tot_loss += samples*loss.item()
         tot_samples += samples
+
     all_preds = torch.cat(all_preds, dim=0)
+    all_forced_imu_preds = torch.cat(all_forced_imu_preds, dim=0)
     all_targs = torch.cat(all_targs, dim=0)
     f1 = hierarchical_f1(all_preds, all_targs)
+    forced_f1 = hierarchical_f1(all_forced_imu_preds, all_targs)
     tot_loss /= max(1, tot_samples)
     model.train()
-    return tot_loss, f1
+    return tot_loss, f1, forced_f1
 
 def train(
     model: Model, train_dl: DataLoader, num_steps: int, optimizer: Optimizer,
@@ -72,9 +84,10 @@ def train(
             train_dl_iter = iter(train_dl)
             # TODO: compute and log metric on training set
             if valid_dl is not None:
-                valid_loss, valid_f1 = valid_loop(valid_dl, model, device)
+                valid_loss, valid_f1, forced_valid_f1 = valid_loop(valid_dl, model, device)
                 final_loss, final_f1 = valid_loss, valid_f1
                 log["valid/f1"] = valid_f1
+                log["valid/forced_f1"] = forced_valid_f1
                 log["valid/loss"] = valid_loss
         log_str = " | ".join(f"{k}={v:.4f}" for k,v in log.items())
         if verbose:
