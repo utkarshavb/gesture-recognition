@@ -124,14 +124,18 @@ def modality_dropout(
 def save_checkpoint(
     model: torch.nn.Module, optimizer: torch.optim.Optimizer, it: int, out: str|Path
 ):
-    obj = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), it=it)
+    obj = dict(
+        model=model.state_dict(), model_cfg=model.config,
+        optimizer=optimizer.state_dict(), it=it
+    )
     torch.save(obj, out)
 
 def load_checkpoint(
-    src: str|Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer|None=None
-) -> int:
+    src: str|Path, model_cls: torch.nn.Module, optimizer: torch.optim.Optimizer|None=None
+) -> tuple[torch.nn.Module, int]:
     obj = torch.load(src)
+    model = model_cls(**obj["model_cfg"])
     model.load_state_dict(obj['model'])
     if optimizer is not None and 'optimizer' in obj:
         optimizer.load_state_dict(obj['optimizer'])
-    return obj["it"]
+    return model, obj["it"]

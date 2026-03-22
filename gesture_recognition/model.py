@@ -101,6 +101,7 @@ class AttentionPooling(nn.Module):
 class Model(nn.Module):
     def __init__(self, num_layers: int, d_model: int, n_classes: int, p=0.0):
         super().__init__()
+        self.cfg = dict(num_layers=num_layers, d_model=d_model, n_classes=n_classes, p=p)
         self.imu_stems = nn.ModuleList(TemporalStem(3, d_model) for _ in range(3))
         self.thm_stem = TemporalStem(5, d_model//2)
         self.tof_stem = ToFStem(d_model//2)
@@ -110,6 +111,10 @@ class Model(nn.Module):
         )
         self.head = nn.Sequential(AttentionPooling(d_model), nn.Linear(d_model, n_classes))
         self._init_weights()
+
+    @property
+    def config(self):
+        return self.cfg
 
     def _init_weights(self):
         for m in self.modules():
